@@ -637,8 +637,10 @@ static void stream_smi_write_dma_callback(void *param)
     uint8_t* buffer_pos;
     stream_smi_check_and_restart(inst);
     
-    inst->current_read_chunk++;
-    
+    /*
+     * DMA has already advanced to the next period when this callback runs.
+     * Refill the completed period for its next turn through the ring.
+     */
     buffer_pos = (uint8_t*) smi_inst->bounce.buffer[0];
     buffer_pos = &buffer_pos[ (DMA_BOUNCE_BUFFER_SIZE/4) * (inst->current_read_chunk % 4)];
     
@@ -653,6 +655,8 @@ static void stream_smi_write_dma_callback(void *param)
         memset(buffer_pos, 0, DMA_BOUNCE_BUFFER_SIZE/4);
     }
     
+    inst->current_read_chunk++;
+
     if(!(inst->current_read_chunk % 111 ))
     {
         dev_info(inst->dev,"init programmed write. missed: %u, sema %u, val %08X",inst->counter_missed,smi_inst->bounce.callback_sem.count,*(uint32_t*) &buffer_pos[0]);
