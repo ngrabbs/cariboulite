@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+if ! systemctl is-active --quiet cariboulite-fpga.service; then
+    printf '%s\n' "CaribouLite FPGA boot service is inactive" >&2
+    exit 1
+fi
+if fuser -s /dev/smi; then
+    printf '%s\n' "CaribouLite SMI is in use" >&2
+    exit 1
+fi
+export CARIBOU_SOFT_RESET=1 CARIBOU_TEST_DRAIN=1 CARIBOU_TEST_SMI_WRITE_STROBE=12
+exec /opt/cariboulite-fixed/tx-test "$@"

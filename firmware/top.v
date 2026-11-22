@@ -217,7 +217,10 @@ module top (
   //=========================================================================
   // CONBINATORIAL ASSIGNMENTS
   //=========================================================================
-  assign w_clock_sys = r_counter;
+  SB_GB sys_clock_buffer (
+      .USER_SIGNAL_TO_GLOBAL_BUFFER(r_counter),
+      .GLOBAL_BUFFER_OUTPUT(w_clock_sys)
+  );
 
   //=========================================================================
   // CLOCK AND DATA-FLOW
@@ -303,7 +306,7 @@ module top (
       .IO_STANDARD("SB_LVCMOS"),
   ) iq_tx_p (
       .PACKAGE_PIN(o_iq_tx_p),
-      .OUTPUT_CLK(~lvds_clock_buf),
+      .OUTPUT_CLK(lvds_clock_buf),
       .D_OUT_0(~w_lvds_tx_d0),
       .D_OUT_1(~w_lvds_tx_d1)
   );
@@ -314,27 +317,31 @@ module top (
       .IO_STANDARD("SB_LVCMOS"),
   ) iq_tx_n (
       .PACKAGE_PIN(o_iq_tx_n),
-      .OUTPUT_CLK(~lvds_clock_buf),
+      .OUTPUT_CLK(lvds_clock_buf),
       .D_OUT_0(w_lvds_tx_d0),
       .D_OUT_1(w_lvds_tx_d1)
   );
 
   // Non-inverting, P-side clock
   SB_IO #(
-      .PIN_TYPE(6'b011001),
+      .PIN_TYPE(6'b010000),
       .IO_STANDARD("SB_LVCMOS")
   ) iq_tx_clk_p (
       .PACKAGE_PIN(o_iq_tx_clk_p),
-      .D_OUT_0(lvds_clock_buf),
+      .OUTPUT_CLK(lvds_clock_buf),
+      .D_OUT_0(1'b1),
+      .D_OUT_1(1'b0),
   );
 
   // Inverting, N-side clock
   SB_IO #(
-      .PIN_TYPE(6'b011001),
+      .PIN_TYPE(6'b010000),
       .IO_STANDARD("SB_LVCMOS")
   ) iq_tx_clk_n (
       .PACKAGE_PIN(o_iq_tx_clk_n),
-      .D_OUT_0(~lvds_clock_buf),
+      .OUTPUT_CLK(lvds_clock_buf),
+      .D_OUT_0(1'b0),
+      .D_OUT_1(1'b1),
   );
 
 
@@ -422,38 +429,23 @@ module top (
   
   lvds_tx lvds_tx_inst (
       .i_rst_b(i_rst_b),
-      .i_ddr_clk(lvds_clock_buf),
+      .i_ddr_clk(~lvds_clock_buf),
+      .i_sys_clk(w_clock_sys),
       .o_ddr_data({w_lvds_tx_d0, w_lvds_tx_d1}),
       .i_fifo_empty(w_tx_fifo_empty),
-      .o_fifo_read_clk(w_tx_fifo_read_clk),
       .o_fifo_pull(w_tx_fifo_pull),
       .i_fifo_data(w_tx_fifo_pulled_data),
       .i_sample_gap(tx_sample_gap),
       .i_tx_state(~w_smi_data_direction),
-      .i_sync_input(w_tx_sync_input_09),
-      .i_debug_lb(w_debug_lb_tx), 
-      .o_tx_state_bit(),
-      .o_sync_state_bit(),
+      .i_debug_lb(w_debug_lb_tx)
   );
 
-  //assign io_pmod[0] = ~lvds_clock_buf;
-  //assign io_pmod[1] = w_lvds_tx_d0;
-  //assign io_pmod[2] = w_lvds_tx_d1;
-  //assign io_pmod[0] = w_smi_write_req;
-  //assign io_pmod[1] = i_smi_swe_srw;
-  //assign io_pmod[2] = w_tx_fifo_push;
-  //assign io_pmod[3] = w_smi_tx_state[0];
-  //assign io_pmod[4] = w_smi_tx_state[1];
-  //assign io_pmod[5] = w_tx_fifo_full;
-  //assign io_pmod[6] = w_tx_fifo_empty;
-  //assign io_pmod[7] = w_tx_fifo_pull;
-
-  //assign io_pmod[7:0] = w_smi_data_input;
-  assign o_smi_write_req = i_smi_swe_srw;
+  // The Pi uses the shared request pin. The other pin is the SMI ACK.
+  assign o_smi_write_req = 1'bz;
 
   wire w_tx_fifo_full;
   wire w_tx_fifo_empty;
-  wire w_tx_fifo_read_clk;
+  wire w_tx_fifo_almost_full;
   wire w_tx_fifo_push;
   wire [31:0] w_tx_fifo_data;
   wire w_tx_fifo_pull;
@@ -461,7 +453,8 @@ module top (
   
   complex_fifo #(
       .ADDR_WIDTH(10),  // 1024 samples
-      .DATA_WIDTH(16),  // 2x16 for I and Q 
+      .DATA_WIDTH(16),  // 2x16 for I and Q
+      .TX_FIFO(1)
   ) tx_fifo (
       // smi clock is writing
       .wr_rst_b_i(i_rst_b),
@@ -469,6 +462,7 @@ module top (
       .wr_en_i(w_tx_fifo_push),
       .wr_data_i(w_tx_fifo_data),
       .full_o(w_tx_fifo_full),
+      .almost_full_o(w_tx_fifo_almost_full),
 	  
       // lvds clock is pulling (reading)
       .rd_rst_b_i(i_rst_b),
@@ -500,7 +494,7 @@ module top (
       .o_tx_fifo_push(w_tx_fifo_push),
       .o_tx_fifo_pushed_data(w_tx_fifo_data),
       .i_tx_fifo_full(w_tx_fifo_full),
-      .o_tx_fifo_clock(/*w_tx_fifo_clock*/),
+      .i_tx_fifo_almost_full(w_tx_fifo_almost_full),
 
       .i_smi_soe_se(i_smi_soe_se),
       .i_smi_swe_srw(i_smi_swe_srw),
@@ -519,6 +513,7 @@ module top (
   wire w_smi_read_req;
   wire w_smi_write_req;
   wire [1:0] w_smi_tx_state;
+  wire w_smi_data_output_enable = i_smi_a2 && !i_smi_soe_se;
 
   // the "Writing" flag indicates that the data[7:0] direction (inout)
   // from the FPGA's SMI module should be "output". This happens when the
@@ -531,7 +526,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io0 (
       .PACKAGE_PIN(io_smi_data[0]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[0]),
       .D_IN_0(w_smi_data_input[0])
   );
@@ -540,7 +535,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io1 (
       .PACKAGE_PIN(io_smi_data[1]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[1]),
       .D_IN_0(w_smi_data_input[1])
   );
@@ -549,7 +544,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io2 (
       .PACKAGE_PIN(io_smi_data[2]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[2]),
       .D_IN_0(w_smi_data_input[2])
   );
@@ -558,7 +553,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io3 (
       .PACKAGE_PIN(io_smi_data[3]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[3]),
       .D_IN_0(w_smi_data_input[3])
   );
@@ -567,7 +562,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io4 (
       .PACKAGE_PIN(io_smi_data[4]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[4]),
       .D_IN_0(w_smi_data_input[4])
   );
@@ -576,7 +571,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io5 (
       .PACKAGE_PIN(io_smi_data[5]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[5]),
       .D_IN_0(w_smi_data_input[5])
   );
@@ -585,7 +580,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io6 (
       .PACKAGE_PIN(io_smi_data[6]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[6]),
       .D_IN_0(w_smi_data_input[6])
   );
@@ -594,7 +589,7 @@ module top (
       .PULLUP  (1'b0)
   ) smi_io7 (
       .PACKAGE_PIN(io_smi_data[7]),
-      .OUTPUT_ENABLE(w_smi_data_direction),
+      .OUTPUT_ENABLE(w_smi_data_output_enable),
       .D_OUT_0(w_smi_data_output[7]),
       .D_IN_0(w_smi_data_input[7])
   );

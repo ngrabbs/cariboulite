@@ -95,10 +95,17 @@ static int caribou_smi_setup_settings (caribou_smi_st* dev, struct smi_settings 
     settings->read_hold_time = 0;
     settings->read_pace_time = 0;
 
-    settings->write_setup_time = 0;
+    settings->write_setup_time = 1;
     settings->write_strobe_time = 5;
-    settings->write_hold_time = 0;
-    settings->write_pace_time = 0;
+    settings->write_hold_time = 1;
+    settings->write_pace_time = 1;
+    const char *strobe = getenv("CARIBOU_TEST_SMI_WRITE_STROBE");
+    if (strobe) {
+        char *end;
+        long cycles = strtol(strobe, &end, 10);
+        if (*end == '\0' && cycles >= 5 && cycles <= 32)
+            settings->write_strobe_time = cycles;
+    }
 
 	// 8 bit on each transmission (4 TRX per sample)
     settings->data_width = SMI_WIDTH_8BIT;
@@ -697,10 +704,8 @@ static void caribou_smi_generate_data(caribou_smi_st* dev, uint8_t* data, size_t
     
     for (unsigned int i = 0; i < (data_length / CARIBOU_SMI_BYTES_PER_SAMPLE); i++)
     {                    
-        int32_t ii = 0xFFFF; //cmplx_vec[i].i;
-        int32_t qq = 0; //cmplx_vec[i].q;
-        ii &= 0x1FFF;
-        qq &= 0x1FFF;
+        uint16_t ii = (uint16_t)cmplx_vec[i].i >> 3;
+        uint16_t qq = (uint16_t)cmplx_vec[i].q >> 3;
 		
         uint32_t s = SMI_TX_SAMPLE_SOF | SMI_TX_SAMPLE_MODEM_TX_CTRL | SMI_TX_SAMPLE_COND_TX_CTRL; s <<= 5;
         s |= (ii >> 8) & 0x1F; s <<= 8;
@@ -754,7 +759,7 @@ int caribou_smi_write(caribou_smi_st* dev, caribou_smi_channel_en channel,
         }
         else if (ret == 0) break;
 
-        written_so_far += current_write_len / CARIBOU_SMI_BYTES_PER_SAMPLE;
+        written_so_far += ret / CARIBOU_SMI_BYTES_PER_SAMPLE;
         left_to_write -= ret;
     }
 

@@ -1165,7 +1165,7 @@ int cariboulite_radio_activate_channel(cariboulite_radio_state_st* radio,
             .loopback_enable = radio->tx_loopback_anabled,
             .drv_strength = at86rf215_iq_drive_current_4ma,
             .common_mode_voltage = at86rf215_iq_common_mode_v_ieee1596_1v2,
-            .tx_control_with_iq_if = !radio->cw_output,
+            .tx_control_with_iq_if = !radio->cw_output && getenv("CARIBOU_SYNC_ONLY") == NULL,
             .radio09_mode = at86rf215_iq_if_mode,
             .radio24_mode = at86rf215_iq_if_mode,
             .clock_skew = at86rf215_iq_clock_data_skew_2_906ns,
@@ -1210,6 +1210,7 @@ int cariboulite_radio_activate_channel(cariboulite_radio_state_st* radio,
             cariboulite_radio_set_modem_state(radio, cariboulite_radio_state_cmd_tx_prep); 
             
             cariboulite_radio_set_tx_bandwidth(radio, radio->tx_bw);
+            cariboulite_radio_set_tx_power(radio, radio->tx_power);
             
             // CW output - disable
             at86rf215_radio_set_tx_dac_input_iq(&radio->sys->modem, 

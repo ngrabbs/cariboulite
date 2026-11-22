@@ -5,7 +5,7 @@ module lvds_rx (
 
     input             i_fifo_full,
     output            o_fifo_write_clk,
-    output            o_fifo_push,
+    output reg        o_fifo_push,
     output reg [31:0] o_fifo_data,
     input             i_sync_input,
     output     [ 1:0] o_debug_state
