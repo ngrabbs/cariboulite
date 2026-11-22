@@ -15,6 +15,7 @@ module async_fifo_fwft #(
 	output reg [2*DATA_WIDTH-1:0]	rd_data_o,
 
 	output reg 						full_o,
+	output reg                       almost_full_o,
 	output reg 						empty_o,
 
 	input wire						debug_pull,
@@ -80,6 +81,18 @@ module async_fifo_fwft #(
 			full_o <= (gray_conv(wr_addr + 1'b1) == rd_addr_gray_wr_r);
 		end
 	end
+
+    localparam GROUP_BITS = ADDR_WIDTH - 5;
+    wire [GROUP_BITS-1:0] next_write_group = wr_addr[ADDR_WIDTH-1:5] + 1'b1;
+    wire [GROUP_BITS-1:0] second_write_group = next_write_group + 1'b1;
+    always @(posedge wr_clk_i) begin
+        if (!wr_rst_b_i)
+            almost_full_o <= 0;
+        else
+            almost_full_o <= (next_write_group ^ (next_write_group >> 1)) == rd_addr_gray_wr_r[ADDR_WIDTH-1:5] ||
+                             (second_write_group ^ (second_write_group >> 1)) == rd_addr_gray_wr_r[ADDR_WIDTH-1:5] ||
+                             full_o;
+    end
 
 	always @(posedge rd_clk_i) begin
 		if (rd_rst_b_i == 1'b0) begin

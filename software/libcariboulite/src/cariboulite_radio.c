@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #ifndef ZF_LOG_LEVEL
     #define ZF_LOG_LEVEL ZF_LOG_VERBOSE
 #endif
@@ -21,7 +22,7 @@
 #define GET_MODEM_CH(rad_ch)	((rad_ch)==cariboulite_channel_s1g ? at86rf215_rf_channel_900mhz : at86rf215_rf_channel_2400mhz)
 #define GET_SMI_CH(rad_ch)		((rad_ch)==cariboulite_channel_s1g ? caribou_smi_channel_900 : caribou_smi_channel_2400)
 
-static float sample_rate_middles[] = {3000, 1666, 1166, 900, 733, 583, 450};
+static float sample_rate_middles[] = {3000000, 1666000, 1166000, 900000, 733000, 583000, 450000};
 static float rx_bandwidth_middles[] = {225, 281, 356, 450, 562, 706, 893, 1125, 1406, 1781, 2250};
 static float tx_bandwidth_middles[] = {90, 112, 142, 180, 225, 282, 357, 450, 562, 712, 900};
 
@@ -1160,7 +1161,7 @@ int cariboulite_radio_activate_channel(cariboulite_radio_state_st* radio,
             .loopback_enable = radio->tx_loopback_anabled,
             .drv_strength = at86rf215_iq_drive_current_4ma,
             .common_mode_voltage = at86rf215_iq_common_mode_v_ieee1596_1v2,
-            .tx_control_with_iq_if = !radio->cw_output,
+            .tx_control_with_iq_if = !radio->cw_output && getenv("CARIBOU_SYNC_ONLY") == NULL,
             .radio09_mode = at86rf215_iq_if_mode,
             .radio24_mode = at86rf215_iq_if_mode,
             .clock_skew = at86rf215_iq_clock_data_skew_4_906ns,
@@ -1206,6 +1207,7 @@ int cariboulite_radio_activate_channel(cariboulite_radio_state_st* radio,
             //cariboulite_radio_set_modem_state(radio, cariboulite_radio_state_cmd_tx_prep); 
             
             cariboulite_radio_set_tx_bandwidth(radio, radio->tx_bw);
+            cariboulite_radio_set_tx_power(radio, -12);
             
             // CW output - disable
             at86rf215_radio_set_tx_dac_input_iq(&radio->sys->modem, 

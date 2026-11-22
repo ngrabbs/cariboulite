@@ -111,6 +111,10 @@ module top (
   wire [7:0] w_tx_data_smi;
   wire       debug_led1;
   wire [7:0] debug_word;
+  wire [31:0] last_iq_word;
+  wire [7:0] smi_trace_byte;
+  wire [3:0] smi_trace_strobe;
+  wire smi_trace_fifo;
   wire [7:0] w_tx_control_word;
   
   //=========================================================================
@@ -233,7 +237,19 @@ module top (
         4'b0001: r_tx_data <= w_tx_data_sys;
         4'b0010: r_tx_data <= w_tx_data_io;
         4'b0100: r_tx_data <= w_tx_data_smi;
-        4'b1000: r_tx_data <= debug_word;  // 0xA5: reserved
+        4'b1000: begin
+          case (w_ioc[2:0])
+            3'd1: r_tx_data <= last_iq_word[7:0];
+            3'd2: r_tx_data <= last_iq_word[15:8];
+            3'd3: r_tx_data <= last_iq_word[23:16];
+            3'd4: r_tx_data <= last_iq_word[31:24];
+            3'd5: r_tx_data <= {w_smi_data_direction, w_tx_fifo_full,
+                               w_tx_fifo_empty, smi_trace_fifo, smi_trace_strobe};
+            3'd6: r_tx_data <= smi_trace_byte;
+            3'd7: r_tx_data <= 8'hd3;
+            default: r_tx_data <= debug_word;
+          endcase
+        end
         4'b0000: r_tx_data <= 8'b00000000;  // no module selected
       endcase
     end
@@ -466,6 +482,7 @@ module top (
       .o_sync_state_bit(),
       .o_heartbeat(debug_led1),
       .o_debug_word(debug_word),
+      .o_last_iq_word(last_iq_word),
       .i_tx_control_word(w_tx_control_word),
   );
   
@@ -474,12 +491,13 @@ module top (
   wire w_tx_fifo_read_clk;
   wire w_tx_fifo_push;
   wire w_tx_fifo_clock;
-  wire [15:0] w_tx_fifo_data;
+  wire [31:0] w_tx_fifo_data;
+  wire w_tx_fifo_almost_full;
   wire w_tx_fifo_pull;
-  wire [15:0] w_tx_fifo_pulled_data;
+  wire [31:0] w_tx_fifo_pulled_data;
   
-  samples_fifo_fwft #(
-      .ADDR_WIDTH(11),  // 1024 samples
+  async_fifo_fwft #(
+      .ADDR_WIDTH(10),  // 1024 samples
       .DATA_WIDTH(16),  // 2x16 for I and Q 
   ) tx_fifo (
       // smi clock is writing
@@ -494,6 +512,7 @@ module top (
       .rd_en_i(w_tx_fifo_pull),
       .rd_data_o(w_tx_fifo_pulled_data),
       .full_o(w_tx_fifo_full),
+      .almost_full_o(w_tx_fifo_almost_full),
       .empty_o(w_tx_fifo_empty),
       .debug_pull(1'b0),
       .debug_push(1'b0)
@@ -541,11 +560,15 @@ module top (
       .o_tx_fifo_push(w_tx_fifo_push),
       .o_tx_fifo_pushed_data(w_tx_fifo_data),
       .i_tx_fifo_full(w_tx_fifo_full),
+      .i_tx_fifo_almost_full(w_tx_fifo_almost_full),
       .o_tx_fifo_clock(w_tx_fifo_clock),
 
       .i_smi_swe_srw(i_smi_swe_srw),
       .i_smi_data_in(w_smi_data_input),
       .o_smi_write_req(w_smi_write_req),
+      .o_trace_byte(smi_trace_byte),
+      .o_trace_strobe(smi_trace_strobe),
+      .o_trace_fifo(smi_trace_fifo),
   );
   
   wire [7:0] w_smi_data_output;

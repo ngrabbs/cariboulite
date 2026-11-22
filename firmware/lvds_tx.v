@@ -14,7 +14,7 @@ module lvds_tx (
     input             i_fifo_empty,
     output            o_fifo_read_clk,
     output          o_fifo_pull,
-    input      [15:0] i_fifo_data,
+    input      [31:0] i_fifo_data,
     input [3:0]     i_sample_gap,
     input             i_tx_state,
     input             i_sync_input,
@@ -23,6 +23,7 @@ module lvds_tx (
     output          o_sync_state_bit,
     output          o_heartbeat,
     output    [7:0] o_debug_word,
+    output reg [31:0] o_last_iq_word,
     input [7:0]    i_tx_control_word,
 );
 
@@ -31,14 +32,13 @@ module lvds_tx (
         tx_state_init    = 4'b0000,
         tx_state_sync    = 4'b0001,
         tx_state_pretx   = 4'b0010,
-        tx_state_tx      = 4'b0100,
         tx_state_debugtx = 4'b1000;
         
     localparam sync_duration_frames = 8'd10;   // at least 2.5usec
     localparam zero_frame =   32'b00000000_00000000_00000000_00000000;
     localparam lb_frame =     32'b10000000_00000000_01000000_00000000;
     localparam sync_frame =   32'b10000000_00000001_01000000_00000000;
-    localparam data_mask =    32'b00111110_11111110_00111111_11111110;
+    localparam data_mask =    32'b00111111_11111110_00111111_11111110;
     localparam test_frame =   32'b00100000_00000000_00010000_00000000;
   // Internal Registers
     reg [7:0] r_sync_count;
@@ -69,7 +69,24 @@ module lvds_tx (
     assign o_sync_state_bit = 1'b0;
     
     assign o_fifo_pull =  r_pulled ;
-    assign o_debug_word = {i_sample_gap,r_state};
+    reg [3:0] debug_seen;
+    assign o_debug_word = {debug_seen,r_state};
+    wire framed = r_fifo_data[31:30] == 2'b10 && r_fifo_data[15:14] == 2'b01;
+    wire nonzero_iq = |(r_fifo_data & 32'h3ffe3ffe);
+    always @(posedge i_ddr_clk or negedge i_rst_b) begin
+      if (!i_rst_b) begin
+        debug_seen <= 0;
+        o_last_iq_word <= 0;
+      end else begin
+        if (lvds_ready_syncd) debug_seen[0] <= 1;
+        if (r_pulled && !i_fifo_empty) debug_seen[1] <= 1;
+        if (w_data_sbe_ddr && framed) debug_seen[2] <= 1;
+        if (w_data_sbe_ddr && framed && nonzero_iq) begin
+          o_last_iq_word <= r_fifo_data;
+          debug_seen[3] <= 1;
+        end
+      end
+    end
     
     wire lvds_ready_syncd;
     wire w_data_sbe_ddr;
@@ -127,7 +144,6 @@ module lvds_tx (
         case (r_state)
             tx_state_init:
                 if( !i_fifo_empty) begin
-                    r_pulled <= i_fifo_data[0];
                     r_state <= tx_state_sync;
                 end
              tx_state_sync: 
@@ -144,21 +160,10 @@ module lvds_tx (
                         end
                         
              end
-             tx_state_pretx:
-             begin
-                    
-                            r_state <= tx_state_tx;
-                            r_fifo_data[31:16] <= ({2'b00, i_fifo_data[15:2]} & data_mask[31:16]) | (sync_frame[31:16]);
-                            r_pulled <= 1'b1;
+             tx_state_pretx: begin
+                r_fifo_data <= ({2'b00, i_fifo_data[31:18], 2'b00, i_fifo_data[15:2]} & data_mask) | sync_frame;
+                r_state <= tx_state_debugtx;
              end
-             
-             tx_state_tx:
-             begin
-                    r_state <= tx_state_debugtx;
-                    r_fifo_data[15:0] <= ({2'b00, i_fifo_data[15:2]} & data_mask[15:0]) | (sync_frame[15:0]);
-                    r_pulled <= 1'b0;
-             end
-             
              tx_state_debugtx:
              begin
 

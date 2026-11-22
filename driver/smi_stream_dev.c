@@ -1,3 +1,4 @@
+#include <linux/vmalloc.h>
 /**
  * Character device driver for Broadcom Secondary Memory Interface
  * Streaming / Polling
@@ -1136,7 +1137,7 @@ static int smi_stream_dev_probe(struct platform_device *pdev)
 	}
 
 	// Create sysfs entries with "smi-stream-dev"
-	inst->smi_stream_class = class_create(THIS_MODULE, DEVICE_NAME);
+	inst->smi_stream_class = class_create(DEVICE_NAME);
 	ptr_err = inst->smi_stream_class;
 	if (IS_ERR(ptr_err))
 	{
@@ -1204,7 +1205,7 @@ static int smi_stream_dev_probe(struct platform_device *pdev)
 *
 ***************************************************************************/
 
-static int smi_stream_dev_remove(struct platform_device *pdev)
+static void smi_stream_dev_remove(struct platform_device *pdev)
 {
 	struct bcm2835_smi_dev_instance *inst=platform_get_drvdata(pdev);
 		
@@ -1219,7 +1220,7 @@ static int smi_stream_dev_remove(struct platform_device *pdev)
 	unregister_chrdev_region(inst->smi_stream_devid, 1);
 
 	dev_info(inst->dev, DRIVER_NAME": smi-stream dev removed");
-	return 0;
+	return;
 }
 
 /****************************************************************************

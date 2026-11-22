@@ -36,6 +36,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
+#include <inttypes.h>
 
 //=======================================================================
 // INTERNAL VARIABLES AND DEFINITIONS
@@ -397,6 +399,11 @@ int main(int argc, char *argv[])
     if (state.test_pattern == 1)
         memset(state.buffer, 0, sizeof(cariboulite_sample_complex_int16) * state.native_write_len);
 
+    if (getenv("CARIBOU_SOFT_RESET") && caribou_fpga_soft_reset(&state.radio->sys->fpga)) {
+        release_system();
+        return 1;
+    }
+
     // Init the radio
     //-------------------------------------
     // Set radio parameters
@@ -404,17 +411,21 @@ int main(int argc, char *argv[])
     cariboulite_radio_set_frequency(state.radio, true, &state.frequency);
     if (state.test_pattern == 1)
         cariboulite_radio_set_cw_outputs(state.radio, false, true);
-    cariboulite_radio_set_tx_power(state.radio, 0);
+    cariboulite_radio_set_tx_power(state.radio, -12);
     cariboulite_radio_sync_information(state.radio);
     if (state.rate < 3900000)
     {
-        cariboulite_radio_set_tx_samp_cutoff_flt(state.radio, state.rate/1000);
+        cariboulite_radio_set_tx_samp_cutoff_flt(state.radio, state.rate);
     }
     else
     {
         cariboulite_radio_set_tx_samp_cutoff(state.radio, cariboulite_radio_rx_sample_rate_4000khz, cariboulite_radio_rx_f_cut_0_75_half_fs);
     }
-    cariboulite_radio_activate_channel(state.radio, cariboulite_channel_dir_tx, true);
+    if (cariboulite_radio_activate_channel(state.radio, cariboulite_channel_dir_tx, true)) {
+        release_system();
+        return 1;
+    }
+    const int sync_only = getenv("CARIBOU_SYNC_ONLY") != NULL;
 
     // Open the input file for reading (only the default mode streams input)
     if (state.test_pattern == 0)
@@ -435,8 +446,18 @@ int main(int argc, char *argv[])
         }
     }
 
+    uint8_t txdfe = 0, gap_cmd[2] = {0x06, 0}, gap_reply[2] = {0};
+    caribou_fpga_st *fpga = &state.radio->sys->fpga;
+    at86rf215_read_buffer(&state.radio->sys->modem, REG_RF24_TXDFE, &txdfe, 1);
+    io_utils_spi_transmit(fpga->io_spi, fpga->io_spi_handle, gap_cmd, gap_reply, 2, io_utils_spi_read_write);
+    printf("TIMING_CONFIG TXDFE=0x%02x FPGA_GAP=%u\n", txdfe, gap_reply[1] & 15);
+
     usleep(100000);
-    unsigned int it = 0;
+    uint64_t requested = 0, accepted = 0;
+    unsigned short_writes = 0;
+    struct timespec tx_begin, tx_end;
+    clock_gettime(CLOCK_MONOTONIC, &tx_begin);
+    unsigned int it = 0, synced = 0, checks = 0, rf_active = 0;
 	while (state.program_running)
 	{
         int ret = 0;
@@ -467,6 +488,57 @@ int main(int argc, char *argv[])
             break;
         }
 
+        requested += nsamples;
+        accepted += ret;
+        short_writes += (size_t)ret < nsamples;
+
+        if (sync_only) {
+            uint8_t iq[3] = {0}, modem = 0;
+            if (at86rf215_read_buffer(&state.radio->sys->modem, REG_RF_IQIFC0, iq, 3) ||
+                at86rf215_read_buffer(&state.radio->sys->modem, REG_RF24_STATE, &modem, 1) ||
+                (iq[0] & 0x81) || (modem & 7) != 3) {
+                fprintf(stderr, "Sync-only interlock failed: IQIFC0=%02x STATE=%02x\n", iq[0], modem);
+                release_system();
+                return 2;
+            }
+            caribou_fpga_st *fpga = &state.radio->sys->fpga;
+            uint8_t tx_debug_request[2] = {0x60, 0}, tx_debug[2] = {0, 0};
+            int debug_rc = io_utils_spi_transmit(fpga->io_spi, fpga->io_spi_handle,
+                         tx_debug_request, tx_debug, 2, io_utils_spi_read_write);
+            uint32_t frame = 0;
+            for (unsigned word = 0; word < 4; ++word) {
+                uint8_t request[2] = {0x61 + word, 0}, answer[2] = {0, 0};
+                io_utils_spi_transmit(fpga->io_spi, fpga->io_spi_handle, request, answer, 2, io_utils_spi_read_write);
+                frame |= (uint32_t)answer[1] << (8 * word);
+            }
+            uint8_t request[2] = {0x00, 0}, version[2] = {0, 0};
+            io_utils_spi_transmit(fpga->io_spi, fpga->io_spi_handle, request, version, 2, io_utils_spi_read_write);
+            uint8_t regs[3] = {0};
+            for (unsigned index = 0; index < 3; ++index) {
+                uint8_t request[2] = {0x65 + index, 0}, answer[2] = {0, 0};
+                io_utils_spi_transmit(fpga->io_spi, fpga->io_spi_handle, request, answer, 2, io_utils_spi_read_write);
+                regs[index] = answer[1];
+            }
+            printf("FPGA_DEBUG 0x%02x spi=%d version=0x%02x frame=0x%08x smi=0x%02x byte=0x%02x image=0x%02x modem_sync=%u\n",
+                tx_debug[1], debug_rc, version[1], frame, regs[0], regs[1], regs[2], !!(iq[2] & 0x80));
+            synced += !!(iq[2] & 0x80);
+            checks++;
+        }
+
+        if (!sync_only) {
+            uint8_t iq[3] = {0}, modem = 0, pac = 0xff;
+            if (at86rf215_read_buffer(&state.radio->sys->modem, REG_RF_IQIFC0, iq, 3) ||
+                at86rf215_read_buffer(&state.radio->sys->modem, REG_RF24_STATE, &modem, 1) ||
+                at86rf215_read_buffer(&state.radio->sys->modem, REG_RF24_PAC, &pac, 1) ||
+                (pac & 31) != 0) {
+                fprintf(stderr, "TX minimum-power guard failed: PAC=%02x\n", pac);
+                release_system();
+                return 2;
+            }
+            synced += !!(iq[2] & 0x80);
+            rf_active += ((modem & 7) == 4);
+            checks++;
+        }
         if (!(it % 67))
             cariboulite_radio_debug(state.radio);
 
@@ -482,8 +554,21 @@ int main(int argc, char *argv[])
         }
     }
 
+    clock_gettime(CLOCK_MONOTONIC, &tx_end);
+    double elapsed = tx_end.tv_sec - tx_begin.tv_sec +
+                     (tx_end.tv_nsec - tx_begin.tv_nsec) / 1e9;
+    printf("TIMING_WRITE requested=%" PRIu64 " accepted=%" PRIu64
+           " partial=%u elapsed=%.6f s\n", requested, accepted, short_writes, elapsed);
+
+    // Let the driver and DMA ring transmit queued samples before closing.
+    const char *drain = getenv("CARIBOU_TEST_DRAIN");
+    if (drain && accepted && state.program_running)
+        usleep(650000);
+
     // close the driver and release resources
     release_system();
     ZF_LOGI("samples written: %u blocks", it);
-    return 0;
+    if (sync_only) printf("SYNC_ONLY %u/%u blocks, all in TXPREP with EEC off\n", synced, checks);
+    if (!sync_only) printf("RF_STATE TX=%u/%u IQ_SYNC=%u/%u at minimum PAC\n", rf_active, checks, synced, checks);
+    return sync_only && (!checks || (synced * 100 < checks * 90));
 }

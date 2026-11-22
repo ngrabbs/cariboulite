@@ -97,6 +97,9 @@ static int caribou_smi_setup_settings (caribou_smi_st* dev, struct smi_settings 
 
     settings->write_setup_time = 1;
     settings->write_strobe_time = 5;
+    const char *strobe = getenv("CARIBOU_TEST_SMI_WRITE_STROBE");
+    if (strobe && atoi(strobe) >= 5 && atoi(strobe) <= 32)
+        settings->write_strobe_time = atoi(strobe);
     settings->write_hold_time = 1;
     settings->write_pace_time = 1;
 
