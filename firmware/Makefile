@@ -1,12 +1,13 @@
 PROG = ../software/libcariboulite/build/test/ice40programmer
 filename = top
 pcf_file = ./io.pcf
+SEED ?= 16
 
-top.bin:
-	yosys -p 'synth_ice40 -top top -json $(filename).json -blif $(filename).blif' -p 'ice40_opt' -p 'fsm_opt' $(filename).v
+SOURCES := $(wildcard *.v)
 
-	#nextpnr-ice40 --lp1k --package qn84 --json $(filename).json --pcf $(pcf_file) --asc $(filename).asc
-	nextpnr-ice40 --lp1k --package qn84 --json $(filename).json --pcf $(pcf_file) --asc $(filename).asc --parallel-refine --opt-timing --seed 16 --timing-allow-fail
+top.bin: $(SOURCES) $(pcf_file)
+	yosys -Q -T -p 'synth_ice40 -abc2 -dffe_min_ce_use 12 -top top -json $(filename).json -blif $(filename).blif' $(filename).v
+	nextpnr-ice40 --lp1k --package qn84 --json $(filename).json --pcf $(pcf_file) --asc $(filename).asc --freq 80 --parallel-refine --opt-timing --seed $(SEED)
 	icepack $(filename).asc $(filename).bin
 
 build: top.bin

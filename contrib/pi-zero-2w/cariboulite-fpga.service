@@ -1,0 +1,16 @@
+[Unit]
+Description=Load the tested CaribouLite FPGA firmware
+After=systemd-modules-load.service systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=25
+ExecStartPre=/usr/sbin/modprobe smi_stream_dev
+ExecStartPre=/usr/bin/grep -qx 5658A45097B9795A4F8D5E3 /sys/module/smi_stream_dev/srcversion
+ExecStartPre=/usr/bin/udevadm wait --timeout=15 /dev/spidev1.0 /dev/spidev1.1 /dev/spidev1.2 /dev/gpiomem /dev/smi
+ExecStartPre=/bin/sh -c 'if /usr/bin/fuser -s /dev/smi; then echo "CaribouLite SMI is in use" >&2; exit 1; fi'
+ExecStart=/opt/cariboulite-fixed/flash-fpga /opt/cariboulite-fixed/paired-timing.bin
+
+[Install]
+WantedBy=multi-user.target

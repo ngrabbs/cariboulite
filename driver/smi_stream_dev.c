@@ -62,6 +62,8 @@
 #include <linux/wait.h>
 #include <linux/poll.h>
 #include <linux/init.h>
+#include <linux/version.h>
+#include <linux/vmalloc.h>
 
 #include "smi_stream_dev.h"
 
@@ -104,7 +106,7 @@ struct bcm2835_smi_dev_instance
     smi_stream_state_en state;
     struct mutex read_lock;
     struct mutex write_lock;
-    spinlock_t state_lock;
+    struct mutex state_lock;
     wait_queue_head_t poll_event;
     uint32_t current_read_chunk;
     uint32_t counter_missed;
@@ -224,7 +226,7 @@ static int set_state(smi_stream_state_en new_state)
     if (inst == NULL) return 0;
     dev_info(inst->dev, "Set STREAMING_STATUS = %d, cur_addr = %d", new_state, new_address);
     
-    spin_lock(&inst->state_lock);
+    mutex_lock(&inst->state_lock);
     
     // in any case if we want to change the state
     // then stop the current transfer and update the new state.
@@ -235,7 +237,7 @@ static int set_state(smi_stream_state_en new_state)
 
         if(smi_is_active(inst->smi_inst))
         {
-            spin_unlock(&inst->state_lock);
+            mutex_unlock(&inst->state_lock);
             return -EAGAIN;
         }
         
@@ -249,7 +251,7 @@ static int set_state(smi_stream_state_en new_state)
     // else if the state is the same, do nothing
     else
     {
-        spin_unlock(&inst->state_lock);
+        mutex_unlock(&inst->state_lock);
         dev_info(inst->dev, "State is the same as before");
         return 0;
     }
@@ -261,23 +263,10 @@ static int set_state(smi_stream_state_en new_state)
 
         if (new_state == smi_stream_tx_channel)
         {
-            // remove all data inside the tx_fifo
-            if (mutex_lock_interruptible(&inst->write_lock))
-            {
-                return -EINTR;
-            }
+            mutex_lock(&inst->write_lock);
             kfifo_reset(&inst->tx_fifo);
             mutex_unlock(&inst->write_lock);
-            
-            inst->writeable = true;
-            wake_up_interruptible(&inst->poll_event);
-            
-            //ret = transfer_thread_init(inst, DMA_MEM_TO_DEV, stream_smi_write_dma_callback);
-            mb();
-            spin_unlock(&inst->state_lock);
-            
-            // return the success
-            return ret;
+            ret = transfer_thread_init(inst, DMA_MEM_TO_DEV, stream_smi_write_dma_callback);
         }
         else
         {
@@ -298,7 +287,7 @@ static int set_state(smi_stream_state_en new_state)
     }
     mb();
     
-    spin_unlock(&inst->state_lock);
+    mutex_unlock(&inst->state_lock);
     
     // return the success
     return ret;
@@ -661,6 +650,7 @@ static void stream_smi_write_dma_callback(void *param)
     else
     {
         inst->counter_missed++;
+        memset(buffer_pos, 0, DMA_BOUNCE_BUFFER_SIZE/4);
     }
     
     if(!(inst->current_read_chunk % 111 ))
@@ -728,6 +718,9 @@ int transfer_thread_init(struct bcm2835_smi_dev_instance *inst, enum dma_transfe
     write_smi_reg(inst->smi_inst, 0, SMIL);
     sema_init(&inst->smi_inst->bounce.callback_sem, 0);
     
+    if (dir == DMA_MEM_TO_DEV)
+        memset(inst->smi_inst->bounce.buffer[0], 0, DMA_BOUNCE_BUFFER_SIZE);
+
     spin_lock(&inst->smi_inst->transaction_lock);
     ret = smi_init_programmed_transfer(inst->smi_inst, dir, DMA_BOUNCE_BUFFER_SIZE/4);
     if (ret != 0)
@@ -773,9 +766,7 @@ void transfer_thread_stop(struct bcm2835_smi_dev_instance *inst)
     //int errors = 0;
     //dev_info(inst->dev, "Reader state became idle, terminating dma %u %u", (inst->address_changed) ,errors);
     print_smil_registers_ext("thread stop 0");
-    spin_lock(&inst->smi_inst->transaction_lock);
     dmaengine_terminate_sync(inst->smi_inst->dma_chan);
-    spin_unlock(&inst->smi_inst->transaction_lock);
     
     //dev_info(inst->dev, "Reader state became idle, terminating smi transaction");
     smi_disable_sync(inst->smi_inst);
@@ -926,7 +917,7 @@ static unsigned int smi_stream_poll(struct file *filp, struct poll_table_struct 
         mask |= ( POLLIN | POLLRDNORM );
     }
     
-    if (!kfifo_is_full(&inst->rx_fifo))
+    if (!kfifo_is_full(&inst->tx_fifo))
     {
         //dev_info(inst->dev, "poll_wait result => writeable=%d", inst->writeable);
         inst->writeable = false;
@@ -1050,7 +1041,11 @@ static int smi_stream_dev_probe(struct platform_device *pdev)
     }
 
     // Create sysfs entries with "smi-stream-dev"
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+    smi_stream_class = class_create(DEVICE_NAME);
+#else
     smi_stream_class = class_create(THIS_MODULE, DEVICE_NAME);
+#endif
     ptr_err = smi_stream_class;
     if (IS_ERR(ptr_err))
     {
@@ -1090,7 +1085,7 @@ static int smi_stream_dev_probe(struct platform_device *pdev)
     inst->writer_waiting_sema = false;
     mutex_init(&inst->read_lock);
     mutex_init(&inst->write_lock);
-    spin_lock_init(&inst->state_lock);
+    mutex_init(&inst->state_lock);
         
     dev_info(inst->dev, "initialised");
     return 0;
@@ -1102,7 +1097,11 @@ static int smi_stream_dev_probe(struct platform_device *pdev)
 *
 ***************************************************************************/
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void smi_stream_dev_remove(struct platform_device *pdev)
+#else
 static int smi_stream_dev_remove(struct platform_device *pdev)
+#endif
 {
     //if (inst->reader_thread != NULL) kthread_stop(inst->reader_thread);
     //inst->reader_thread = NULL;	
@@ -1113,7 +1112,9 @@ static int smi_stream_dev_remove(struct platform_device *pdev)
     unregister_chrdev_region(smi_stream_devid, 1);
 
     dev_info(inst->dev, DRIVER_NAME": smi-stream dev removed");
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
     return 0;
+#endif
 }
 
 /****************************************************************************

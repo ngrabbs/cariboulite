@@ -1,6 +1,7 @@
 module complex_fifo #(	
 	parameter ADDR_WIDTH = 10,
-	parameter DATA_WIDTH = 16 
+	parameter DATA_WIDTH = 16,
+    parameter TX_FIFO = 0
 )
 (
 	input wire 			            wr_rst_b_i,
@@ -15,6 +16,7 @@ module complex_fifo #(
 
 	output reg 						full_o,
 	output reg 						empty_o,
+    output wire almost_full_o,
 );
 
 	reg [ADDR_WIDTH-1:0]	wr_addr;
@@ -95,12 +97,35 @@ module complex_fifo #(
 		end
 	end
 
-	always @(posedge rd_clk_i) begin
-		if (rd_en_i) begin
-			rd_data_o[15:0] <= mem_q[rd_addr][15:0];
-			rd_data_o[31:16] <= mem_i[rd_addr][15:0];
-		end
-	end
+    generate
+        if (TX_FIFO) begin : tx_prefetch
+            // Reserve at least one 32-word group for writes already in flight.
+            localparam GROUP_BITS = ADDR_WIDTH - 5;
+            wire [GROUP_BITS-1:0] next_group = wr_addr[ADDR_WIDTH-1:5] + 1'b1;
+            wire [GROUP_BITS-1:0] second_group = next_group + 1'b1;
+            wire [GROUP_BITS-1:0] read_group_gray = rd_addr_gray_wr_r[ADDR_WIDTH-1:5];
+            wire [ADDR_WIDTH-1:0] read_address = rd_addr + rd_en_i;
+
+            reg almost_full;
+            assign almost_full_o = almost_full;
+            always @(posedge wr_clk_i) begin
+                if (!wr_rst_b_i)
+                    almost_full <= 0;
+                else
+                    almost_full <= full_o ||
+                        (next_group ^ (next_group >> 1)) == read_group_gray ||
+                        (second_group ^ (second_group >> 1)) == read_group_gray;
+            end
+            always @(posedge rd_clk_i)
+                rd_data_o <= {mem_i[read_address], mem_q[read_address]};
+        end else begin : rx_registered
+            always @(posedge rd_clk_i) begin
+                if (rd_en_i)
+                    rd_data_o <= {mem_i[rd_addr], mem_q[rd_addr]};
+            end
+            assign almost_full_o = full_o;
+        end
+    endgenerate
 
 	always @(posedge wr_clk_i) begin
 		if (wr_en_i) begin
